@@ -1,0 +1,50 @@
+name: Validate Vid-go-clip
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Ensure FFmpeg
+        shell: powershell
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y --no-progress
+            $env:Path += ";C:\ProgramData\chocolatey\bin"
+          }
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Compile Python sources
+        run: python -m compileall -q app.py vidgoclip tests
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Export a real 9x16 smoke-test clip
+        run: python tests/export_smoke.py
+
+      - name: Upload smoke-test clip
+        uses: actions/upload-artifact@v4
+        with:
+          name: vid-go-clip-export-smoke
+          path: artifacts/vid-go-clip-export-smoke.mp4
+          if-no-files-found: error
+          retention-days: 14
