@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any
+
+
+@dataclass
+class TranscriptWord:
+    start: float
+    end: float
+    word: str
+    probability: float = 1.0
 
 
 @dataclass
@@ -28,6 +35,7 @@ class Candidate:
     title: str = ""
     reason: str = ""
     visual_description: str = ""
+    audio_description: str = ""
     scores: dict[str, float] = field(default_factory=dict)
     final_score: float = 0.0
 
@@ -40,6 +48,9 @@ class Candidate:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Candidate":
+        # Backward compatibility with v0.1 caches.
+        value = dict(value)
+        value.setdefault("audio_description", "")
         return cls(**value)
 
 
@@ -48,6 +59,7 @@ class AnalysisResult:
     video_path: str
     duration: float
     transcript: list[TranscriptSegment]
+    words: list[TranscriptWord]
     scenes: list[Scene]
     candidates: list[Candidate]
     cache_key: str
@@ -58,6 +70,7 @@ class AnalysisResult:
             "video_path": self.video_path,
             "duration": self.duration,
             "transcript": [asdict(x) for x in self.transcript],
+            "words": [asdict(x) for x in self.words],
             "scenes": [asdict(x) for x in self.scenes],
             "candidates": [x.to_dict() for x in self.candidates],
             "cache_key": self.cache_key,
@@ -70,6 +83,7 @@ class AnalysisResult:
             video_path=str(value["video_path"]),
             duration=float(value["duration"]),
             transcript=[TranscriptSegment(**x) for x in value.get("transcript", [])],
+            words=[TranscriptWord(**x) for x in value.get("words", [])],
             scenes=[Scene(**x) for x in value.get("scenes", [])],
             candidates=[Candidate.from_dict(x) for x in value.get("candidates", [])],
             cache_key=str(value.get("cache_key", "")),
