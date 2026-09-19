@@ -5,7 +5,7 @@ from typing import Callable
 
 from faster_whisper import WhisperModel
 
-from .models import TranscriptSegment
+from .models import TranscriptSegment, TranscriptWord
 
 Progress = Callable[[str], None] | None
 
@@ -26,7 +26,7 @@ def transcribe_video(
     *,
     model_name: str = "small",
     progress: Progress = None,
-) -> tuple[list[TranscriptSegment], str]:
+) -> tuple[list[TranscriptSegment], list[TranscriptWord], str]:
     device, compute_type = _runtime()
     if progress:
         progress(
@@ -40,7 +40,7 @@ def transcribe_video(
     )
 
     if progress:
-        progress("Transcribing speech locally...")
+        progress("Transcribing speech with word-level timing...")
 
     segments_iter, info = model.transcribe(
         str(video_path),
@@ -48,9 +48,12 @@ def transcribe_video(
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
         condition_on_previous_text=False,
+        word_timestamps=True,
     )
 
     segments: list[TranscriptSegment] = []
+    words: list[TranscriptWord] = []
+
     for index, segment in enumerate(segments_iter, start=1):
         text = segment.text.strip()
         if text:
@@ -61,13 +64,37 @@ def transcribe_video(
                     text=text,
                 )
             )
+
+        for word in getattr(segment, "words", None) or []:
+            token = str(getattr(word, "word", "") or "").strip()
+            if not token:
+                continue
+            start = getattr(word, "start", None)
+            end = getattr(word, "end", None)
+            if start is None or end is None:
+                continue
+            words.append(
+                TranscriptWord(
+                    start=float(start),
+                    end=float(end),
+                    word=token,
+                    probability=float(
+                        getattr(word, "probability", 1.0) or 0.0
+                    ),
+                )
+            )
+
         if progress and index % 25 == 0:
-            progress(f"Transcribed {index} speech segments...")
+            progress(
+                f"Transcribed {index} speech segments • "
+                f"{len(words)} timed words..."
+            )
 
     language = str(getattr(info, "language", "") or "")
     if progress:
         progress(
-            f"Transcription complete: {len(segments)} segments"
+            f"Transcription complete: {len(segments)} segments • "
+            f"{len(words)} words"
             + (f" • language {language}" if language else "")
         )
-    return segments, language
+    return segments, words, language
