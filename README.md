@@ -36,13 +36,13 @@ The project is designed to find more than keyword hits. A useful clip should:
 - avoid near-duplicate clips,
 - and eventually support smart 9:16 reframing/captions.
 
-## v0.1 MVP
+## v0.2 Smart Clipping
 
 The first implementation provides:
 
 - Windows desktop GUI.
 - Local video selection.
-- Local transcription with **faster-whisper**.
+- Local transcription with **faster-whisper** and word-level timestamps.
 - Shot/scene boundaries with **PySceneDetect**.
 - Candidate clip generation aligned to speech timing.
 - Local semantic scoring through **Ollama**.
@@ -58,7 +58,12 @@ The first implementation provides:
 - De-duplication of overlapping candidates.
 - Ranked results with timestamps and transcript excerpts.
 - Exact clip export through FFmpeg.
-- Optional 9:16 center-crop export.
+- In-app preview playback with audio on Windows.
+- Local audio-energy / excitement analysis.
+- Word/pause-aware boundary cleanup so clips start/end more naturally.
+- Burned-in word-timed captions.
+- Smart 9:16 reframing that tracks faces when possible and motion when faces are unavailable.
+- Optional fixed center crop remains available by disabling Smart track.
 - Analysis caching so reopening the same video does not require full transcription again.
 
 ## Free / local by default
@@ -131,13 +136,23 @@ Vid-go-clip/
    └─ transcribe.py
 ```
 
+## v0.2 export controls
+
+The main screen now exposes three independent export controls:
+
+- **9:16** — produce a 1080×1920 Short.
+- **Smart track** — dynamically follow faces/motion rather than fixed center crop.
+- **Captions** — burn word-timed captions into the clip.
+
+The preview panel lets you watch the exact selected candidate before exporting.
+
 ## Current limitations
 
 v0.1 is optimized first for podcasts, interviews, commentary, discussions, documentaries, livestreams, meetings, and videos where speech matters.
 
-Pure sports/gameplay/action highlight detection needs specialized motion/audio-event scoring and is a planned extension.
+Pure sports/gameplay/action highlight detection still needs specialized event models. v0.2 adds general audio-energy and transient heuristics, but these are signals rather than definitive laughter/applause/shout classifiers.
 
-The optional 9:16 export in v0.1 uses a safe center crop. **Active-speaker / face-aware dynamic reframing is a later milestone.**
+v0.2 includes local dynamic 9:16 reframing. It follows detected faces and falls back to motion tracking, then smooths the crop path to reduce jitter. This is not identity-level speaker tracking yet.
 
 ## Development rule
 
