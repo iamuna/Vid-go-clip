@@ -186,7 +186,7 @@ def expand_context(
     indices = [
         index
         for index, segment in enumerate(transcript)
-        if segment.end >= candidate.start and segment.start <= candidate.end
+        if segment.end > candidate.start and segment.start < candidate.end
     ]
     if not indices:
         return candidate
