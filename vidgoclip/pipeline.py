@@ -206,13 +206,14 @@ def analyze_video(
             str(settings.get("analysis_focus", "Balanced")),
         )
 
-    ranked = deduplicate_ranked(candidates)
-    result = AnalysisResult(
+    # Cache the full scored pool so changing focus later can produce a
+    # genuinely different ranking instead of reusing an already-deduplicated list.
+    cached_result = AnalysisResult(
         video_path=str(video_path.resolve()),
         duration=duration,
         transcript=transcript,
         scenes=scenes,
-        candidates=ranked,
+        candidates=candidates,
         cache_key=key,
         model_notes={
             "whisper": str(settings["whisper_model"]),
@@ -221,6 +222,17 @@ def analyze_video(
             "visual_ai": "enabled" if ai_available else "fallback",
         },
     )
-    save_analysis(result)
+    save_analysis(cached_result)
+
+    ranked = deduplicate_ranked(candidates)
+    result = AnalysisResult(
+        video_path=cached_result.video_path,
+        duration=cached_result.duration,
+        transcript=cached_result.transcript,
+        scenes=cached_result.scenes,
+        candidates=ranked,
+        cache_key=cached_result.cache_key,
+        model_notes=cached_result.model_notes,
+    )
     _progress(progress, f"Analysis complete: {len(ranked)} ranked moments.")
     return result
