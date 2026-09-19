@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vidgoclip.exporter import export_clip
-from vidgoclip.models import Candidate
+from vidgoclip.models import Candidate, TranscriptSegment, TranscriptWord
 
 TEMP = ROOT / "temp" / "ci-export"
 OUTPUT = ROOT / "artifacts"
@@ -66,11 +66,27 @@ def main() -> None:
         title="Smoke test",
         final_score=90,
     )
+    words = [
+        TranscriptWord(1.15, 1.45, "Smart"),
+        TranscriptWord(1.50, 1.85, "vertical"),
+        TranscriptWord(1.90, 2.20, "caption"),
+        TranscriptWord(2.25, 2.55, "smoke"),
+        TranscriptWord(2.60, 2.95, "test."),
+    ]
+    transcript = [
+        TranscriptSegment(1.15, 2.95, "Smart vertical caption smoke test.")
+    ]
+
     exported = export_clip(
         source,
         candidate,
         destination_dir=OUTPUT,
         vertical=True,
+        smart_reframe=True,
+        burn_captions=True,
+        words=words,
+        transcript=transcript,
+        caption_words_per_line=3,
     )
     final = OUTPUT / "vid-go-clip-export-smoke.mp4"
     if final.exists():
@@ -85,7 +101,7 @@ def main() -> None:
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height,codec_name",
+            "stream=width,height,codec_name,codec_type",
             "-of",
             "default=noprint_wrappers=1",
             str(final),
@@ -98,6 +114,25 @@ def main() -> None:
     assert "width=1080" in text, text
     assert "height=1920" in text, text
     assert "codec_name=h264" in text, text
+
+    audio_probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "default=noprint_wrappers=1",
+            str(final),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "codec_name=aac" in audio_probe.stdout, audio_probe.stdout
     print(final)
 
 
