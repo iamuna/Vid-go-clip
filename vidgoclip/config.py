@@ -62,7 +62,7 @@ FOCUS_WEIGHTS = {
         "emotion": 0.11,
         "visual": 0.11,
         "audio": 0.08,
-        "context": 0.09,
+        "context": 0.07,
     },
     "Emotional": {
         "importance": 0.14,
