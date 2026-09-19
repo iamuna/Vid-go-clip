@@ -4,7 +4,7 @@ import math
 import re
 
 from .config import FOCUS_WEIGHTS
-from .models import Candidate, Scene, TranscriptSegment
+from .models import Candidate, Scene, TranscriptSegment, TranscriptWord
 
 INTEREST_TERMS = {
     "surprising", "crazy", "insane", "secret", "actually", "never",
@@ -257,3 +257,65 @@ def deduplicate_ranked(
             continue
         result.append(candidate)
     return result
+
+
+
+def refine_word_boundaries(
+    candidate: Candidate,
+    words: list[TranscriptWord],
+    *,
+    max_seconds: float,
+) -> Candidate:
+    """Snap a candidate to complete word/sentence boundaries when possible."""
+    if not words:
+        return candidate
+
+    inside = [
+        index
+        for index, word in enumerate(words)
+        if word.end > candidate.start and word.start < candidate.end
+    ]
+    if not inside:
+        return candidate
+
+    first_i = min(inside)
+    last_i = max(inside)
+
+    # Walk backward a few seconds to a sentence break or meaningful pause.
+    refined_start = words[first_i].start
+    back_limit = max(0.0, candidate.start - 4.0)
+    i = first_i - 1
+    while i >= 0 and words[i].end >= back_limit:
+        gap = words[i + 1].start - words[i].end
+        if words[i].word.rstrip().endswith((".", "!", "?")) or gap >= 0.85:
+            refined_start = words[i + 1].start
+            break
+        refined_start = words[i].start
+        i -= 1
+
+    # Walk forward a few seconds to finish the thought.
+    refined_end = words[last_i].end
+    forward_limit = min(
+        candidate.start + max_seconds,
+        candidate.end + 4.0,
+    )
+    i = last_i
+    while i < len(words):
+        refined_end = words[i].end
+        token = words[i].word.rstrip()
+        next_gap = (
+            words[i + 1].start - words[i].end
+            if i + 1 < len(words)
+            else 999.0
+        )
+        if token.endswith((".", "!", "?")) or next_gap >= 0.9:
+            break
+        if i + 1 >= len(words) or words[i + 1].end > forward_limit:
+            break
+        i += 1
+
+    if refined_end - refined_start <= max_seconds + 0.5:
+        candidate.start = max(0.0, refined_start - 0.18)
+        candidate.end = refined_end + 0.28
+
+    return candidate
