@@ -5,7 +5,9 @@ import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+import cv2
 import customtkinter as ctk
+from PIL import Image, ImageTk
 
 from vidgoclip.ai import ollama_ready
 from vidgoclip.config import OUTPUT_DIR, load_settings, save_settings
@@ -13,6 +15,7 @@ from vidgoclip.exporter import export_clip
 from vidgoclip.media import executable_available, format_timestamp
 from vidgoclip.models import AnalysisResult, Candidate
 from vidgoclip.pipeline import analyze_video
+from vidgoclip.preview import prepare_preview
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -25,7 +28,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.settings = master.settings.copy()
 
         self.title("Vid-go-clip Settings")
-        self.geometry("620x520")
+        self.geometry("620x540")
         self.resizable(False, False)
         self.transient(master)
         self.grab_set()
@@ -90,8 +93,8 @@ class SettingsDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             self,
             text=(
-                "small is the default Whisper model for speed. Larger models "
-                "can improve transcription but require more time/resources."
+                "v0.2 uses word-level timestamps. Larger Whisper models can "
+                "improve transcript/boundary quality but take more resources."
             ),
             wraplength=560,
             justify="left",
@@ -150,6 +153,8 @@ class SettingsDialog(ctk.CTkToplevel):
 
 
 class VidGoClipApp(ctk.CTk):
+    PREVIEW_SIZE = (440, 248)
+
     def __init__(self) -> None:
         super().__init__()
         self.settings = load_settings()
@@ -157,9 +162,19 @@ class VidGoClipApp(ctk.CTk):
         self.analysis: AnalysisResult | None = None
         self.candidate_by_id: dict[str, Candidate] = {}
 
-        self.title("Vid-go-clip")
-        self.geometry("1280x820")
-        self.minsize(1020, 700)
+        self.preview_capture = None
+        self.preview_after_id = None
+        self.preview_photo = None
+        self.preview_video_path: Path | None = None
+        self.preview_audio_path: Path | None = None
+        self.preview_candidate_id: str | None = None
+        self.preview_playing = False
+        self.preview_fps = 30.0
+
+        self.title("Vid-go-clip v0.2 — Smart Clipping")
+        self.geometry("1380x900")
+        self.minsize(1120, 760)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
@@ -174,14 +189,15 @@ class VidGoClipApp(ctk.CTk):
 
         ctk.CTkLabel(
             header,
-            text="VID-GO-CLIP",
+            text="VID-GO-CLIP  •  SMART CLIPPING v0.2",
             font=ctk.CTkFont(size=26, weight="bold"),
         ).grid(row=0, column=0, sticky="w", padx=24, pady=(16, 2))
 
         ctk.CTkLabel(
             header,
             text=(
-                "Upload a long video → AI watches/listens → ranked moments → export clips"
+                "Video + speech + audio energy → ranked moments → preview → "
+                "smart vertical reframe + captions"
             ),
             text_color=("gray35", "gray70"),
         ).grid(row=1, column=0, sticky="w", padx=24, pady=(0, 16))
@@ -228,7 +244,7 @@ class VidGoClipApp(ctk.CTk):
 
         controls = ctk.CTkFrame(body)
         controls.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
-        controls.grid_columnconfigure(5, weight=1)
+        controls.grid_columnconfigure(8, weight=1)
 
         ctk.CTkLabel(controls, text="Focus").grid(
             row=0, column=0, padx=(12, 6), pady=12
@@ -236,7 +252,7 @@ class VidGoClipApp(ctk.CTk):
         self.focus_var = ctk.StringVar(
             value=str(self.settings.get("analysis_focus", "Balanced"))
         )
-        self.focus_menu = ctk.CTkOptionMenu(
+        ctk.CTkOptionMenu(
             controls,
             variable=self.focus_var,
             values=[
@@ -247,26 +263,45 @@ class VidGoClipApp(ctk.CTk):
                 "Emotional",
             ],
             command=self._focus_changed,
-            width=140,
-        )
-        self.focus_menu.grid(row=0, column=1, padx=(0, 12), pady=12)
+            width=135,
+        ).grid(row=0, column=1, padx=(0, 8), pady=12)
 
         self.vertical_var = ctk.BooleanVar(
             value=bool(self.settings.get("vertical_export", False))
         )
         ctk.CTkCheckBox(
             controls,
-            text="Export 9:16 center crop",
+            text="9:16",
             variable=self.vertical_var,
             command=self._save_ui_settings,
-        ).grid(row=0, column=2, padx=12, pady=12)
+        ).grid(row=0, column=2, padx=8, pady=12)
+
+        self.smart_var = ctk.BooleanVar(
+            value=bool(self.settings.get("smart_reframe", True))
+        )
+        ctk.CTkCheckBox(
+            controls,
+            text="Smart track",
+            variable=self.smart_var,
+            command=self._save_ui_settings,
+        ).grid(row=0, column=3, padx=8, pady=12)
+
+        self.caption_var = ctk.BooleanVar(
+            value=bool(self.settings.get("burn_captions", True))
+        )
+        ctk.CTkCheckBox(
+            controls,
+            text="Captions",
+            variable=self.caption_var,
+            command=self._save_ui_settings,
+        ).grid(row=0, column=4, padx=8, pady=12)
 
         self.force_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             controls,
-            text="Reanalyze from scratch",
+            text="Reanalyze",
             variable=self.force_var,
-        ).grid(row=0, column=3, padx=12, pady=12)
+        ).grid(row=0, column=5, padx=8, pady=12)
 
         self.analyze_button = ctk.CTkButton(
             controls,
@@ -275,7 +310,7 @@ class VidGoClipApp(ctk.CTk):
             font=ctk.CTkFont(size=16, weight="bold"),
             command=self._start_analysis,
         )
-        self.analyze_button.grid(row=0, column=4, padx=12, pady=12)
+        self.analyze_button.grid(row=0, column=6, padx=12, pady=12)
 
         self.progress = ctk.CTkProgressBar(body, mode="indeterminate")
         self.progress.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
@@ -294,8 +329,8 @@ class VidGoClipApp(ctk.CTk):
         table_frame.grid_columnconfigure(0, weight=1)
 
         columns = (
-            "rank", "time", "score", "important",
-            "controversy", "interesting", "visual", "title",
+            "rank", "time", "score", "important", "controversy",
+            "interesting", "visual", "audio", "title",
         )
         self.tree = ttk.Treeview(
             table_frame,
@@ -311,17 +346,19 @@ class VidGoClipApp(ctk.CTk):
             "controversy": "Contr.",
             "interesting": "Int.",
             "visual": "Visual",
+            "audio": "Audio",
             "title": "Suggested moment",
         }
         widths = {
             "rank": 42,
-            "time": 110,
-            "score": 65,
-            "important": 58,
-            "controversy": 58,
-            "interesting": 58,
-            "visual": 58,
-            "title": 280,
+            "time": 112,
+            "score": 62,
+            "important": 54,
+            "controversy": 54,
+            "interesting": 54,
+            "visual": 54,
+            "audio": 54,
+            "title": 270,
         }
         for column in columns:
             self.tree.heading(column, text=headings[column])
@@ -345,7 +382,45 @@ class VidGoClipApp(ctk.CTk):
         detail = ctk.CTkFrame(result_area)
         detail.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         detail.grid_columnconfigure(0, weight=1)
-        detail.grid_rowconfigure(2, weight=1)
+        detail.grid_rowconfigure(5, weight=1)
+
+        self.preview_label = ctk.CTkLabel(
+            detail,
+            text="Select a moment, then press PLAY PREVIEW",
+            width=self.PREVIEW_SIZE[0],
+            height=self.PREVIEW_SIZE[1],
+            fg_color=("gray80", "gray15"),
+            corner_radius=8,
+        )
+        self.preview_label.grid(
+            row=0, column=0, sticky="ew", padx=14, pady=(14, 6)
+        )
+
+        preview_buttons = ctk.CTkFrame(detail, fg_color="transparent")
+        preview_buttons.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
+        preview_buttons.grid_columnconfigure(2, weight=1)
+        self.preview_button = ctk.CTkButton(
+            preview_buttons,
+            text="PLAY PREVIEW",
+            width=125,
+            command=self._play_selected_preview,
+            state="disabled",
+        )
+        self.preview_button.grid(row=0, column=0, padx=(0, 6))
+        self.stop_preview_button = ctk.CTkButton(
+            preview_buttons,
+            text="STOP",
+            width=80,
+            command=self._stop_preview,
+            state="disabled",
+        )
+        self.stop_preview_button.grid(row=0, column=1, padx=(0, 6))
+        self.preview_time_label = ctk.CTkLabel(
+            preview_buttons,
+            text="",
+            anchor="e",
+        )
+        self.preview_time_label.grid(row=0, column=2, sticky="e")
 
         self.detail_title = ctk.CTkLabel(
             detail,
@@ -353,10 +428,10 @@ class VidGoClipApp(ctk.CTk):
             font=ctk.CTkFont(size=18, weight="bold"),
             anchor="w",
             justify="left",
-            wraplength=430,
+            wraplength=440,
         )
         self.detail_title.grid(
-            row=0, column=0, sticky="ew", padx=14, pady=(14, 6)
+            row=2, column=0, sticky="ew", padx=14, pady=(6, 6)
         )
 
         self.detail_reason = ctk.CTkLabel(
@@ -364,16 +439,23 @@ class VidGoClipApp(ctk.CTk):
             text="Ranked moments will appear here after analysis.",
             anchor="w",
             justify="left",
-            wraplength=430,
+            wraplength=440,
             text_color=("gray30", "gray75"),
         )
         self.detail_reason.grid(
-            row=1, column=0, sticky="ew", padx=14, pady=(0, 8)
+            row=3, column=0, sticky="ew", padx=14, pady=(0, 8)
         )
 
-        self.transcript_box = ctk.CTkTextbox(detail)
+        ctk.CTkLabel(
+            detail,
+            text="Transcript",
+            anchor="w",
+            font=ctk.CTkFont(weight="bold"),
+        ).grid(row=4, column=0, sticky="ew", padx=14, pady=(0, 4))
+
+        self.transcript_box = ctk.CTkTextbox(detail, height=150)
         self.transcript_box.grid(
-            row=2, column=0, sticky="nsew", padx=14, pady=(0, 12)
+            row=5, column=0, sticky="nsew", padx=14, pady=(0, 12)
         )
         self.transcript_box.configure(state="disabled")
 
@@ -382,7 +464,7 @@ class VidGoClipApp(ctk.CTk):
             text="Choose a video to begin.",
             anchor="w",
             justify="left",
-            wraplength=1100,
+            wraplength=1200,
         )
         self.status_label.grid(
             row=4, column=0, sticky="ew", padx=12, pady=(0, 8)
@@ -417,8 +499,8 @@ class VidGoClipApp(ctk.CTk):
         ctk.CTkLabel(
             actions,
             text=(
-                "Scores are editorial signals, not truth/fact ratings. "
-                "Review context before publishing."
+                "Smart track follows faces/motion. Audio-event labels are "
+                "heuristics, not definitive sound classification."
             ),
             anchor="e",
             text_color=("gray35", "gray70"),
@@ -427,7 +509,6 @@ class VidGoClipApp(ctk.CTk):
     def _refresh_status(self) -> None:
         ffmpeg_ok = executable_available("ffmpeg") and executable_available("ffprobe")
         ai_ok = ollama_ready(str(self.settings["ollama_base_url"]))
-
         if ffmpeg_ok and ai_ok:
             text = "LOCAL AI READY"
         elif not ffmpeg_ok and not ai_ok:
@@ -439,6 +520,7 @@ class VidGoClipApp(ctk.CTk):
         self.stack_badge.configure(text=text)
 
     def _choose_video(self) -> None:
+        self._stop_preview()
         path = filedialog.askopenfilename(
             title="Choose a video",
             filetypes=[
@@ -455,7 +537,9 @@ class VidGoClipApp(ctk.CTk):
 
     def _save_ui_settings(self) -> None:
         self.settings["analysis_focus"] = self.focus_var.get()
-        self.settings["vertical_export"] = self.vertical_var.get()
+        self.settings["vertical_export"] = bool(self.vertical_var.get())
+        self.settings["smart_reframe"] = bool(self.smart_var.get())
+        self.settings["burn_captions"] = bool(self.caption_var.get())
         save_settings(self.settings)
 
     def _focus_changed(self, _value: str) -> None:
@@ -477,11 +561,13 @@ class VidGoClipApp(ctk.CTk):
         if self.analysis and self.analysis.candidates:
             self.export_selected_button.configure(state="normal")
             self.export_top_button.configure(state="normal")
+            self.preview_button.configure(state="normal")
 
     def _progress_message(self, message: str) -> None:
         self.after(0, lambda: self.status_label.configure(text=message))
 
     def _start_analysis(self, force_override: bool | None = None) -> None:
+        self._stop_preview()
         if self.video_path is None:
             typed = self.video_var.get().strip()
             if typed:
@@ -499,12 +585,8 @@ class VidGoClipApp(ctk.CTk):
             return
 
         self._save_ui_settings()
-        force = (
-            self.force_var.get()
-            if force_override is None
-            else force_override
-        )
-        self._set_busy("Starting video analysis...")
+        force = self.force_var.get() if force_override is None else force_override
+        self._set_busy("Starting smart video analysis...")
 
         threading.Thread(
             target=self._analysis_worker,
@@ -527,10 +609,7 @@ class VidGoClipApp(ctk.CTk):
 
     def _analysis_finished(self, result: AnalysisResult) -> None:
         self.analysis = result
-        self.candidate_by_id = {
-            candidate.id: candidate
-            for candidate in result.candidates
-        }
+        self.candidate_by_id = {c.id: c for c in result.candidates}
 
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -549,6 +628,7 @@ class VidGoClipApp(ctk.CTk):
                     f"{s.get('controversy', 0):.0f}",
                     f"{s.get('interest', 0):.0f}",
                     f"{s.get('visual', 0):.0f}",
+                    f"{s.get('audio', 0):.0f}",
                     candidate.title or candidate.id,
                 ),
             )
@@ -560,7 +640,9 @@ class VidGoClipApp(ctk.CTk):
             text=(
                 f"Found {len(result.candidates)} ranked moments • "
                 f"Whisper {notes.get('whisper', '?')} • "
-                f"Visual AI {notes.get('visual_ai', '?')}"
+                f"word timing {notes.get('word_timing', '?')} • "
+                f"audio {notes.get('audio_analysis', '?')} • "
+                f"visual AI {notes.get('visual_ai', '?')}"
             )
         )
         if result.candidates:
@@ -571,10 +653,11 @@ class VidGoClipApp(ctk.CTk):
 
     def _analysis_failed(self, error: str) -> None:
         self._clear_busy()
-        self.status_label.configure(text=f"Analysis failed: {error}")
+        self.status_label.configure(text=f"Operation failed: {error}")
         messagebox.showerror("Vid-go-clip", error)
 
     def _selection_changed(self, _event=None) -> None:
+        self._stop_preview()
         selection = self.tree.selection()
         if not selection:
             return
@@ -593,18 +676,22 @@ class VidGoClipApp(ctk.CTk):
             )
         )
         visual = (
-            f"\n\nVisual: {candidate.visual_description}"
-            if candidate.visual_description
-            else ""
+            f"\nVisual: {candidate.visual_description}"
+            if candidate.visual_description else ""
+        )
+        audio = (
+            f"\nAudio: {candidate.audio_description}"
+            if candidate.audio_description else ""
         )
         self.detail_reason.configure(
             text=(
-                f"{candidate.reason}{visual}\n\n"
+                f"{candidate.reason}{visual}{audio}\n\n"
                 f"Importance {s.get('importance', 0):.0f} • "
                 f"Controversy {s.get('controversy', 0):.0f} • "
                 f"Interest {s.get('interest', 0):.0f} • "
                 f"Emotion {s.get('emotion', 0):.0f} • "
                 f"Visual {s.get('visual', 0):.0f} • "
+                f"Audio {s.get('audio', 0):.0f} • "
                 f"Context {s.get('context', 0):.0f}"
             )
         )
@@ -612,12 +699,149 @@ class VidGoClipApp(ctk.CTk):
         self.transcript_box.delete("1.0", "end")
         self.transcript_box.insert("1.0", candidate.text)
         self.transcript_box.configure(state="disabled")
+        self.preview_label.configure(
+            text="Press PLAY PREVIEW to watch this exact candidate",
+            image=None,
+        )
+        self.preview_time_label.configure(
+            text=f"{candidate.duration:.1f}s"
+        )
+        self.preview_button.configure(state="normal")
 
     def _selected_candidate(self) -> Candidate | None:
         selection = self.tree.selection()
         if not selection:
             return None
         return self.candidate_by_id.get(selection[0])
+
+    def _play_selected_preview(self) -> None:
+        candidate = self._selected_candidate()
+        if candidate is None or self.video_path is None:
+            return
+
+        self._stop_preview()
+        self.status_label.configure(text="Preparing in-app preview...")
+        self.preview_button.configure(state="disabled")
+        threading.Thread(
+            target=self._preview_prepare_worker,
+            args=(self.video_path, candidate),
+            daemon=True,
+        ).start()
+
+    def _preview_prepare_worker(
+        self,
+        video_path: Path,
+        candidate: Candidate,
+    ) -> None:
+        try:
+            video, audio = prepare_preview(video_path, candidate)
+        except Exception as exc:
+            self.after(0, self._preview_failed, str(exc))
+            return
+        self.after(
+            0,
+            self._start_preview_files,
+            candidate.id,
+            video,
+            audio,
+        )
+
+    def _preview_failed(self, error: str) -> None:
+        self.preview_button.configure(state="normal")
+        self.status_label.configure(text=f"Preview failed: {error}")
+
+    def _start_preview_files(
+        self,
+        candidate_id: str,
+        video_path: Path,
+        audio_path: Path | None,
+    ) -> None:
+        self.preview_candidate_id = candidate_id
+        self.preview_video_path = video_path
+        self.preview_audio_path = audio_path
+        self.preview_capture = cv2.VideoCapture(str(video_path))
+        if not self.preview_capture.isOpened():
+            self._preview_failed("OpenCV could not open the preview.")
+            return
+
+        self.preview_fps = float(
+            self.preview_capture.get(cv2.CAP_PROP_FPS) or 30.0
+        )
+        self.preview_playing = True
+        self.stop_preview_button.configure(state="normal")
+        self.status_label.configure(text="Playing preview inside Vid-go-clip.")
+
+        if audio_path is not None and os.name == "nt":
+            try:
+                import winsound
+                winsound.PlaySound(
+                    str(audio_path),
+                    winsound.SND_FILENAME | winsound.SND_ASYNC,
+                )
+            except Exception:
+                pass
+
+        self._preview_tick()
+
+    def _preview_tick(self) -> None:
+        if not self.preview_playing or self.preview_capture is None:
+            return
+
+        ok, frame = self.preview_capture.read()
+        if not ok:
+            self._stop_preview()
+            return
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(frame)
+        image.thumbnail(self.PREVIEW_SIZE, Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", self.PREVIEW_SIZE, (15, 15, 15))
+        x = (self.PREVIEW_SIZE[0] - image.width) // 2
+        y = (self.PREVIEW_SIZE[1] - image.height) // 2
+        canvas.paste(image, (x, y))
+        self.preview_photo = ImageTk.PhotoImage(canvas)
+        self.preview_label.configure(image=self.preview_photo, text="")
+
+        frame_index = float(
+            self.preview_capture.get(cv2.CAP_PROP_POS_FRAMES) or 0
+        )
+        seconds = frame_index / max(1.0, self.preview_fps)
+        candidate = self._selected_candidate()
+        total = candidate.duration if candidate else 0.0
+        self.preview_time_label.configure(
+            text=f"{seconds:.1f}s / {total:.1f}s"
+        )
+
+        delay = max(10, int(round(1000.0 / max(1.0, self.preview_fps))))
+        self.preview_after_id = self.after(delay, self._preview_tick)
+
+    def _stop_preview(self) -> None:
+        self.preview_playing = False
+        if self.preview_after_id is not None:
+            try:
+                self.after_cancel(self.preview_after_id)
+            except Exception:
+                pass
+            self.preview_after_id = None
+
+        if self.preview_capture is not None:
+            try:
+                self.preview_capture.release()
+            except Exception:
+                pass
+            self.preview_capture = None
+
+        if os.name == "nt":
+            try:
+                import winsound
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
+
+        if hasattr(self, "stop_preview_button"):
+            self.stop_preview_button.configure(state="disabled")
+        if hasattr(self, "preview_button") and self.analysis:
+            self.preview_button.configure(state="normal")
 
     def _export_selected(self) -> None:
         candidate = self._selected_candidate()
@@ -633,23 +857,31 @@ class VidGoClipApp(ctk.CTk):
         self._start_export(self.analysis.candidates[:count])
 
     def _start_export(self, candidates: list[Candidate]) -> None:
-        self._set_busy(
-            f"Exporting {len(candidates)} clip(s)..."
-        )
-        vertical = bool(self.vertical_var.get())
+        self._stop_preview()
+        self._save_ui_settings()
+        self._set_busy(f"Exporting {len(candidates)} smart clip(s)...")
+        options = {
+            "vertical": bool(self.vertical_var.get()),
+            "smart_reframe": bool(self.smart_var.get()),
+            "burn_captions": bool(self.caption_var.get()),
+            "caption_words_per_line": int(
+                self.settings.get("caption_words_per_line", 7)
+            ),
+        }
         threading.Thread(
             target=self._export_worker,
-            args=(candidates, vertical),
+            args=(candidates, options),
             daemon=True,
         ).start()
 
     def _export_worker(
         self,
         candidates: list[Candidate],
-        vertical: bool,
+        options: dict,
     ) -> None:
         assert self.video_path is not None
         outputs = []
+        analysis = self.analysis
         try:
             for index, candidate in enumerate(candidates, start=1):
                 self._progress_message(
@@ -659,7 +891,15 @@ class VidGoClipApp(ctk.CTk):
                     export_clip(
                         self.video_path,
                         candidate,
-                        vertical=vertical,
+                        vertical=bool(options["vertical"]),
+                        smart_reframe=bool(options["smart_reframe"]),
+                        burn_captions=bool(options["burn_captions"]),
+                        words=analysis.words if analysis else [],
+                        transcript=analysis.transcript if analysis else [],
+                        caption_words_per_line=int(
+                            options["caption_words_per_line"]
+                        ),
+                        progress=self._progress_message,
                     )
                 )
         except Exception as exc:
@@ -670,9 +910,7 @@ class VidGoClipApp(ctk.CTk):
     def _export_finished(self, outputs: list[Path]) -> None:
         self._clear_busy()
         self.status_label.configure(
-            text=(
-                f"Exported {len(outputs)} clip(s) to {OUTPUT_DIR.resolve()}"
-            )
+            text=f"Exported {len(outputs)} clip(s) to {OUTPUT_DIR.resolve()}"
         )
         messagebox.showinfo(
             "Export complete",
@@ -685,6 +923,10 @@ class VidGoClipApp(ctk.CTk):
             os.startfile(OUTPUT_DIR.resolve())
         else:
             messagebox.showinfo("Output folder", str(OUTPUT_DIR.resolve()))
+
+    def _on_close(self) -> None:
+        self._stop_preview()
+        self.destroy()
 
 
 if __name__ == "__main__":
