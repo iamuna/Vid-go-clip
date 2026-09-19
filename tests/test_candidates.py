@@ -5,8 +5,9 @@ from vidgoclip.candidates import (
     build_candidates,
     deduplicate_ranked,
     expand_context,
+    refine_word_boundaries,
 )
-from vidgoclip.models import Candidate, Scene, TranscriptSegment
+from vidgoclip.models import Candidate, Scene, TranscriptSegment, TranscriptWord
 
 
 class CandidateTests(unittest.TestCase):
@@ -80,6 +81,34 @@ class CandidateTests(unittest.TestCase):
         c = Candidate(id="c", start=60, end=95, text="c", final_score=70)
         result = deduplicate_ranked([a, b, c])
         self.assertEqual([item.id for item in result], ["a", "c"])
+
+
+    def test_word_boundary_refinement_uses_sentence_and_pause(self):
+        words = [
+            TranscriptWord(0.0, 0.4, "Earlier"),
+            TranscriptWord(0.45, 0.9, "setup."),
+            TranscriptWord(2.0, 2.3, "This"),
+            TranscriptWord(2.35, 2.7, "is"),
+            TranscriptWord(2.75, 3.1, "the"),
+            TranscriptWord(3.15, 3.7, "important"),
+            TranscriptWord(3.75, 4.2, "part."),
+            TranscriptWord(5.4, 5.9, "Next"),
+            TranscriptWord(5.95, 6.4, "thought."),
+        ]
+        candidate = Candidate(
+            id="c1",
+            start=2.4,
+            end=4.0,
+            text="is the important part",
+        )
+        refined = refine_word_boundaries(
+            candidate,
+            words,
+            max_seconds=10,
+        )
+        self.assertLess(refined.start, 2.1)
+        self.assertGreater(refined.end, 4.2)
+        self.assertLess(refined.end, 5.4)
 
 
 if __name__ == "__main__":
