@@ -636,13 +636,18 @@ class VidGoClipApp(ctk.CTk):
         self._set_busy(
             f"Exporting {len(candidates)} clip(s)..."
         )
+        vertical = bool(self.vertical_var.get())
         threading.Thread(
             target=self._export_worker,
-            args=(candidates,),
+            args=(candidates, vertical),
             daemon=True,
         ).start()
 
-    def _export_worker(self, candidates: list[Candidate]) -> None:
+    def _export_worker(
+        self,
+        candidates: list[Candidate],
+        vertical: bool,
+    ) -> None:
         assert self.video_path is not None
         outputs = []
         try:
@@ -654,7 +659,7 @@ class VidGoClipApp(ctk.CTk):
                     export_clip(
                         self.video_path,
                         candidate,
-                        vertical=self.vertical_var.get(),
+                        vertical=vertical,
                     )
                 )
         except Exception as exc:
