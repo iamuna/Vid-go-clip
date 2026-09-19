@@ -34,7 +34,7 @@ The user chooses a focus preset and the final rank is derived from those stored 
 
 "Controversy" means disagreement/debate potential. It is not a fact-check, moral rating, political recommendation, or claim that a statement is false.
 
-## Current v0.1 architecture
+## Current v0.2 architecture
 
 ### Transcription
 `vidgoclip/transcribe.py`
@@ -43,6 +43,7 @@ The user chooses a focus preset and the final rank is derived from those stored 
 - defaults to `small`
 - attempts CUDA when CTranslate2 reports a CUDA device; otherwise CPU int8
 - speech/VAD timestamps feed candidate boundaries
+- word-level timestamps are stored for exact boundary cleanup and captions
 
 ### Scene detection
 `vidgoclip/scenes.py`
@@ -101,13 +102,53 @@ Order:
 
 Important: **cache the full scored candidate pool, not only the current deduplicated ranking**. Otherwise switching focus cannot produce a genuinely different result.
 
+### Audio excitement
+`vidgoclip/audio_events.py`
+
+- extracts local mono PCM audio once and caches it
+- computes normalized RMS energy, spectral flux and zero-crossing signals
+- derives an explainable audio score plus heuristic hints for loud speech / applause-like / laughter-like energy
+- these labels are heuristics, not definitive audio-event classification
+
+### Boundary refinement
+`vidgoclip/candidates.py`
+
+After segment-level context expansion, `refine_word_boundaries()` uses word timestamps, punctuation and meaningful pauses to clean clip starts/ends.
+
+The current "speaker-turn" behavior is a **word/pause boundary heuristic**, not identity-level diarization. Do not claim speaker identity.
+
+### Smart reframing
+`vidgoclip/reframe.py`
+
+- samples the selected clip for faces
+- prefers a stable large face near the previous crop center
+- falls back to motion centroid when no face is usable
+- exponentially smooths the crop path
+- renders 1080×1920 locally with OpenCV
+- original audio is remuxed by FFmpeg
+
+### Captions
+`vidgoclip/captions.py`
+
+- creates ASS subtitles from word timestamps
+- falls back to transcript-segment timing
+- exporter can burn captions into normal or vertical clips
+
+### Preview
+`vidgoclip/preview.py` + `app.py`
+
+- caches a lightweight preview clip
+- OpenCV drives in-app video playback
+- Windows `winsound` plays the matching preview WAV asynchronously
+
 ### Export
 `vidgoclip/exporter.py`
 
-- FFmpeg H.264/AAC precise re-encode
-- optional 1080×1920 center crop
-
-Center crop is only a convenience. Do not describe it as smart reframing.
+- FFmpeg H.264/AAC precise output
+- optional 1080×1920
+- optional smart face/motion reframing
+- optional burned timed captions
+- center crop remains as a fallback when smart tracking is disabled
 
 ## Cost / privacy rule
 
@@ -133,19 +174,18 @@ Most important conclusions:
 - complete context is an explicit quality dimension,
 - explainable category scores are preferable to one opaque number.
 
-## Immediate engineering priorities after v0.1
+## Immediate engineering priorities after v0.2
 
-1. Runtime test on real long-form videos.
-2. Exact boundary refinement using speaker turns + AI suggestion.
-3. Word-level timestamps for better subtitle/export boundaries.
-4. Audio excitement signals: laughter, applause, shouting, silence.
-5. Active-speaker face tracking and true dynamic 9:16 reframing.
-6. Caption generation/burn-in.
-7. Preview playback inside the app.
-8. Sports/gameplay event plugins.
-9. Native temporal video-model analysis for top candidates.
-10. Batch-folder mode and watch-folder automation.
-11. Export directly into the YT SMB project as a source queue.
+1. Runtime/playtest on real podcasts, interviews, livestreams and documentaries.
+2. Identity-level local speaker diarization as an optional plugin.
+3. Better audio-event classification using a dedicated local audio model.
+4. Active-speaker lip-motion correlation for multi-person shots.
+5. Caption style presets and word highlighting.
+6. Manual trim handles in the preview.
+7. Sports/gameplay event plugins.
+8. Native temporal video-model analysis for top candidates.
+9. Batch-folder mode and watch-folder automation.
+10. Export directly into the YT SMB project as a source queue.
 
 ## Coding discipline
 
