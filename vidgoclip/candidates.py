@@ -201,6 +201,9 @@ def expand_context(
         and current_duration < max_seconds - 4
     ):
         candidate.start = max(0.0, transcript[first_i - 1].start - 0.4)
+        candidate.text = (
+            transcript[first_i - 1].text + " " + candidate.text
+        ).strip()
 
     last_text = transcript[last_i].text.strip()
     if (
