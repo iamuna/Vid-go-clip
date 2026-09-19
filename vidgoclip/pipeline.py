@@ -14,11 +14,13 @@ from .candidates import (
     deduplicate_ranked,
     expand_context,
     prefilter_candidates,
+    refine_word_boundaries,
 )
+from .audio_events import analyze_audio, score_candidate_audio
 from .config import CACHE_DIR
 from .frames import extract_candidate_frames, motion_score
 from .media import ffprobe_duration, video_cache_key
-from .models import AnalysisResult, Candidate, Scene, TranscriptSegment
+from .models import AnalysisResult, Candidate, Scene
 from .scenes import detect_scenes
 from .storage import analysis_key, load_analysis, save_analysis
 from .transcribe import transcribe_video
@@ -97,7 +99,7 @@ def analyze_video(
             cached.candidates = deduplicate_ranked(cached.candidates)
             return cached
 
-    transcript, language = transcribe_video(
+    transcript, words, language = transcribe_video(
         video_path,
         model_name=str(settings["whisper_model"]),
         progress=progress,
@@ -195,12 +197,21 @@ def analyze_video(
                 min(75.0, 30.0 + motion * 0.55),
             )
 
+    _progress(progress, "Refining exact clip boundaries and analyzing audio...")
+    audio_timeline = analyze_audio(video_path, key)
+
     for candidate in candidates:
         expand_context(
             candidate,
             transcript,
             max_seconds=float(settings["max_clip_seconds"]),
         )
+        refine_word_boundaries(
+            candidate,
+            words,
+            max_seconds=float(settings["max_clip_seconds"]),
+        )
+        score_candidate_audio(candidate, audio_timeline)
         apply_final_score(
             candidate,
             str(settings.get("analysis_focus", "Balanced")),
@@ -212,6 +223,7 @@ def analyze_video(
         video_path=str(video_path.resolve()),
         duration=duration,
         transcript=transcript,
+        words=words,
         scenes=scenes,
         candidates=candidates,
         cache_key=key,
@@ -220,6 +232,9 @@ def analyze_video(
             "ollama": str(settings["ollama_model"]),
             "language": language,
             "visual_ai": "enabled" if ai_available else "fallback",
+            "word_timing": "enabled" if words else "segment-only",
+            "audio_analysis": "enabled" if audio_timeline is not None else "unavailable",
+            "turn_boundaries": "word/pause heuristic",
         },
     )
     save_analysis(cached_result)
@@ -229,6 +244,7 @@ def analyze_video(
         video_path=cached_result.video_path,
         duration=cached_result.duration,
         transcript=cached_result.transcript,
+        words=cached_result.words,
         scenes=cached_result.scenes,
         candidates=ranked,
         cache_key=cached_result.cache_key,
