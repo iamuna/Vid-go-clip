@@ -14,7 +14,7 @@ def analysis_key(
     whisper_model: str,
     ollama_model: str,
 ) -> str:
-    payload = f"{video_key}|{whisper_model}|{ollama_model}|v1".encode("utf-8")
+    payload = f"{video_key}|{whisper_model}|{ollama_model}|v2".encode("utf-8")
     return hashlib.sha1(payload).hexdigest()[:24]
 
 
